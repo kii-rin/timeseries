@@ -7,8 +7,21 @@ from pathlib import Path
 from scripts.run_pair_direction import direction, fetch_points, guess_next
 
 
-def backtest_pair(pair: str, lookback: int) -> list[dict[str, str]]:
-    points = fetch_points(pair, interval="60m", range_="1mo")
+def backtest_pair(pair: str, lookback: int, window: str) -> tuple[list[dict[str, str]], str]:
+    """Backtest pair direction guesses.
+
+    Yahoo's hourly endpoint can be inconsistent for long windows, so this script
+    defaults to a shorter supported window and writes an error report instead of
+    silently failing.
+    """
+    try:
+        points = fetch_points(pair, interval="60m", range_=window)
+    except Exception as exc:  # noqa: BLE001
+        return [], f"data_fetch_failed: {type(exc).__name__}: {exc}"
+
+    if len(points) < lookback + 3:
+        return [], f"not_enough_points: got {len(points)}, need at least {lookback + 3}"
+
     rows: list[dict[str, str]] = []
     for idx in range(lookback + 1, len(points) - 1):
         history = points[: idx + 1]
@@ -31,7 +44,7 @@ def backtest_pair(pair: str, lookback: int) -> list[dict[str, str]]:
                 "result": result,
             }
         )
-    return rows
+    return rows, "ok"
 
 
 def accuracy(rows: list[dict[str, str]]) -> float:
@@ -51,11 +64,13 @@ def save_csv(path: Path, rows: list[dict[str, str]]) -> None:
         writer.writerows(rows)
 
 
-def save_markdown(path: Path, rows: list[dict[str, str]]) -> None:
+def save_markdown(path: Path, rows: list[dict[str, str]], status: str, window: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [
         "# Pair Direction Backtest",
         "",
+        f"Status: {status}",
+        f"Window: {window}",
         f"Accuracy: {accuracy(rows)}% across {len(rows)} hourly checks.",
         "",
         "| Target hour | Pair | Guess | Actual | Result |",
@@ -70,14 +85,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", default="EURUSD=X")
     parser.add_argument("--lookback", type=int, default=3)
+    parser.add_argument("--window", default="5d", help="Yahoo chart range, e.g. 5d or 1mo")
     parser.add_argument("--csv", default="reports/pair_direction_backtest.csv")
     parser.add_argument("--md", default="reports/pair_direction_backtest.md")
     args = parser.parse_args()
 
-    rows = backtest_pair(args.pair, args.lookback)
+    rows, status = backtest_pair(args.pair, args.lookback, args.window)
     save_csv(Path(args.csv), rows)
-    save_markdown(Path(args.md), rows)
-    print(f"{args.pair} direction backtest accuracy: {accuracy(rows)}% across {len(rows)} checks")
+    save_markdown(Path(args.md), rows, status, args.window)
+    print(f"{args.pair} direction backtest status={status} accuracy={accuracy(rows)}% checks={len(rows)}")
 
 
 if __name__ == "__main__":
