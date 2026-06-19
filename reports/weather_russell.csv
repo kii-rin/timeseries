@@ -1,2 +1,2 @@
 run_time,place,from_time,target_time,predicted_temp_f,actual_temp_f,absolute_error_f,precip_probability,status
-2026-06-19T20:24:42.055941+00:00,"Russell, Kansas",2026-06-19T20:00:00+00:00,2026-06-19T21:00:00+00:00,79.3,,,8,WAITING
+2026-06-19T20:24:42.055941+00:00,"Russell, Kansas",2026-06-19T20:00:00+00:00,2026-06-19T21:00:00+00:00,79.3,79.8,0.5,8,DONE
