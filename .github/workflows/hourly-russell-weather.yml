@@ -1,6 +1,7 @@
 name: hourly-russell-weather
 
 on:
+  push:
   workflow_dispatch:
   schedule:
     - cron: "17 * * * *"
