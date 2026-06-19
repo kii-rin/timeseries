@@ -1,18 +1,4 @@
 target_time,pair,source,guess,actual,result
-2026-05-22,EURUSD=X,web_daily_fallback,DOWN,DOWN,BLUE CORRECT
-2026-05-25,EURUSD=X,web_daily_fallback,DOWN,UP,RED WRONG
-2026-05-26,EURUSD=X,web_daily_fallback,UP,DOWN,RED WRONG
-2026-05-27,EURUSD=X,web_daily_fallback,UP,UP,BLUE CORRECT
-2026-05-28,EURUSD=X,web_daily_fallback,UP,DOWN,RED WRONG
-2026-05-29,EURUSD=X,web_daily_fallback,DOWN,UP,RED WRONG
-2026-06-01,EURUSD=X,web_daily_fallback,UP,UP,BLUE CORRECT
-2026-06-02,EURUSD=X,web_daily_fallback,UP,UP,BLUE CORRECT
-2026-06-03,EURUSD=X,web_daily_fallback,UP,DOWN,RED WRONG
-2026-06-04,EURUSD=X,web_daily_fallback,DOWN,UP,RED WRONG
-2026-06-05,EURUSD=X,web_daily_fallback,DOWN,FLAT,WHITE FLAT
-2026-06-08,EURUSD=X,web_daily_fallback,UP,DOWN,RED WRONG
-2026-06-09,EURUSD=X,web_daily_fallback,DOWN,UP,RED WRONG
-2026-06-10,EURUSD=X,web_daily_fallback,DOWN,DOWN,BLUE CORRECT
 2026-06-11,EURUSD=X,web_daily_fallback,DOWN,DOWN,BLUE CORRECT
 2026-06-12,EURUSD=X,web_daily_fallback,DOWN,UP,RED WRONG
 2026-06-14,EURUSD=X,web_daily_fallback,DOWN,UP,RED WRONG
