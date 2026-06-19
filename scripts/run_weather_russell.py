@@ -11,6 +11,22 @@ from pathlib import Path
 RUSSELL_LAT = 38.8953
 RUSSELL_LON = -98.8598
 PLACE = "Russell, Kansas"
+HOURLY_FIELDS = [
+    "temperature_2m",
+    "relative_humidity_2m",
+    "wind_speed_10m",
+    "cloud_cover",
+    "surface_pressure",
+    "precipitation_probability",
+]
+TARGETS = {
+    "temperature_f": "°F",
+    "humidity_pct": "%",
+    "wind_speed_mph": "mph",
+    "cloud_cover_pct": "%",
+    "pressure_hpa": "hPa",
+    "precip_probability_pct": "%",
+}
 
 
 def fetch_forecast(latitude: float = RUSSELL_LAT, longitude: float = RUSSELL_LON) -> list[dict[str, object]]:
@@ -18,8 +34,9 @@ def fetch_forecast(latitude: float = RUSSELL_LAT, longitude: float = RUSSELL_LON
         {
             "latitude": latitude,
             "longitude": longitude,
-            "hourly": "temperature_2m,precipitation_probability",
+            "hourly": ",".join(HOURLY_FIELDS),
             "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
             "timezone": "UTC",
             "forecast_days": 3,
         }
@@ -34,8 +51,9 @@ def fetch_archive(start: date, end: date, latitude: float = RUSSELL_LAT, longitu
             "longitude": longitude,
             "start_date": start.isoformat(),
             "end_date": end.isoformat(),
-            "hourly": "temperature_2m,precipitation_probability",
+            "hourly": ",".join(HOURLY_FIELDS),
             "temperature_unit": "fahrenheit",
+            "wind_speed_unit": "mph",
             "timezone": "UTC",
         }
     )
@@ -47,32 +65,57 @@ def _fetch_open_meteo(base_url: str, params: str) -> list[dict[str, object]]:
     with urllib.request.urlopen(req, timeout=30) as response:
         payload = json.loads(response.read().decode("utf-8"))
 
-    rows = []
     hourly = payload.get("hourly", {})
     times = hourly.get("time", [])
-    temps = hourly.get("temperature_2m", [])
-    precip = hourly.get("precipitation_probability", [None] * len(times))
-    for t, temp, rain_chance in zip(times, temps, precip, strict=False):
-        if temp is None:
-            continue
-        rows.append(
-            {
-                "time": datetime.fromisoformat(t).replace(tzinfo=timezone.utc).isoformat(),
-                "temperature_f": round(float(temp), 1),
-                "precip_probability": "" if rain_chance is None else int(rain_chance),
-            }
-        )
+    rows = []
+    for i, t in enumerate(times):
+        timestamp = datetime.fromisoformat(t).replace(tzinfo=timezone.utc)
+        row = {
+            "time": timestamp.isoformat(),
+            "hour_utc": timestamp.hour,
+            "day_of_week": timestamp.weekday(),
+            "temperature_f": _num(hourly.get("temperature_2m", [None] * len(times))[i]),
+            "humidity_pct": _num(hourly.get("relative_humidity_2m", [None] * len(times))[i]),
+            "wind_speed_mph": _num(hourly.get("wind_speed_10m", [None] * len(times))[i]),
+            "cloud_cover_pct": _num(hourly.get("cloud_cover", [None] * len(times))[i]),
+            "pressure_hpa": _num(hourly.get("surface_pressure", [None] * len(times))[i]),
+            "precip_probability_pct": _num(hourly.get("precipitation_probability", [None] * len(times))[i]),
+        }
+        if row["temperature_f"] is not None:
+            rows.append(row)
     return rows
 
 
-def naive_temperature_prediction(history: list[dict[str, object]], lookback: int = 3) -> float:
-    """Predict next hour's temperature as the recent average change added to latest temp."""
-    if len(history) < lookback + 1:
-        raise ValueError("not enough rows for prediction")
-    temps = [float(row["temperature_f"]) for row in history]
-    changes = [temps[i] - temps[i - 1] for i in range(1, len(temps))]
-    avg_change = sum(changes[-lookback:]) / lookback
-    return round(temps[-1] + avg_change, 1)
+def _num(value: object) -> float | None:
+    if value is None:
+        return None
+    return round(float(value), 1)
+
+
+def predict_value(history: list[dict[str, object]], target: str, lookback: int = 3) -> float:
+    """Predict the next hour using recent movement and same-hour-yesterday seasonality."""
+    clean = [row for row in history if row.get(target) is not None]
+    if len(clean) < lookback + 1:
+        raise ValueError(f"not enough rows for {target}")
+    values = [float(row[target]) for row in clean]
+    changes = [values[i] - values[i - 1] for i in range(1, len(values))]
+    momentum_prediction = values[-1] + sum(changes[-lookback:]) / lookback
+
+    if len(clean) >= 24:
+        daily_prediction = float(clean[-24][target])
+        prediction = 0.55 * daily_prediction + 0.45 * momentum_prediction
+    else:
+        prediction = momentum_prediction
+
+    if target in {"humidity_pct", "cloud_cover_pct", "precip_probability_pct"}:
+        prediction = max(0.0, min(100.0, prediction))
+    if target == "wind_speed_mph":
+        prediction = max(0.0, prediction)
+    return round(prediction, 1)
+
+
+def predict_all(history: list[dict[str, object]], lookback: int) -> dict[str, float]:
+    return {target: predict_value(history, target, lookback) for target in TARGETS}
 
 
 def load_log(path: Path) -> list[dict[str, str]]:
@@ -82,38 +125,36 @@ def load_log(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
+def live_fieldnames() -> list[str]:
+    base = ["run_time", "place", "from_time", "target_time", "hour_utc", "day_of_week", "status"]
+    for target in TARGETS:
+        base.extend([f"predicted_{target}", f"actual_{target}", f"absolute_error_{target}"])
+    return base
+
+
 def save_log(path: Path, rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "run_time",
-        "place",
-        "from_time",
-        "target_time",
-        "predicted_temp_f",
-        "actual_temp_f",
-        "absolute_error_f",
-        "precip_probability",
-        "status",
-    ]
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=live_fieldnames())
         writer.writeheader()
         writer.writerows(rows)
 
 
 def update_pending(rows: list[dict[str, str]], observed: list[dict[str, object]]) -> None:
-    temp_by_time = {str(row["time"]): float(row["temperature_f"]) for row in observed}
+    by_time = {str(row["time"]): row for row in observed}
     for row in rows:
         if row.get("status") != "WAITING":
             continue
-        target_time = row["target_time"]
-        if target_time not in temp_by_time:
+        actual_row = by_time.get(row["target_time"])
+        if not actual_row:
             continue
-        actual = round(temp_by_time[target_time], 1)
-        predicted = float(row["predicted_temp_f"])
-        error = round(abs(actual - predicted), 1)
-        row["actual_temp_f"] = str(actual)
-        row["absolute_error_f"] = str(error)
+        for target in TARGETS:
+            actual = actual_row.get(target)
+            if actual is None:
+                continue
+            predicted = float(row[f"predicted_{target}"])
+            row[f"actual_{target}"] = str(round(float(actual), 1))
+            row[f"absolute_error_{target}"] = str(round(abs(float(actual) - predicted), 1))
         row["status"] = "DONE"
 
 
@@ -124,76 +165,101 @@ def append_next_prediction(rows: list[dict[str, str]], weather_rows: list[dict[s
         past_or_now = weather_rows[: lookback + 1]
     latest = past_or_now[-1]
     latest_time = str(latest["time"])
-    target_time = (datetime.fromisoformat(latest_time) + timedelta(hours=1)).isoformat()
+    target_dt = datetime.fromisoformat(latest_time) + timedelta(hours=1)
+    target_time = target_dt.isoformat()
     if (PLACE, target_time) in {(row["place"], row["target_time"]) for row in rows}:
         return
 
-    rows.append(
-        {
-            "run_time": now.isoformat(),
-            "place": PLACE,
-            "from_time": latest_time,
-            "target_time": target_time,
-            "predicted_temp_f": str(naive_temperature_prediction(past_or_now, lookback)),
-            "actual_temp_f": "",
-            "absolute_error_f": "",
-            "precip_probability": str(latest.get("precip_probability", "")),
-            "status": "WAITING",
-        }
-    )
+    preds = predict_all(past_or_now, lookback)
+    new_row = {
+        "run_time": now.isoformat(),
+        "place": PLACE,
+        "from_time": latest_time,
+        "target_time": target_time,
+        "hour_utc": str(target_dt.hour),
+        "day_of_week": str(target_dt.weekday()),
+        "status": "WAITING",
+    }
+    for target, pred in preds.items():
+        new_row[f"predicted_{target}"] = str(pred)
+        new_row[f"actual_{target}"] = ""
+        new_row[f"absolute_error_{target}"] = ""
+    rows.append(new_row)
 
 
 def backtest(rows: list[dict[str, object]], lookback: int) -> list[dict[str, str]]:
     output = []
-    for idx in range(lookback, len(rows) - 1):
+    for idx in range(max(24, lookback), len(rows) - 1):
         history = rows[: idx + 1]
-        target = rows[idx + 1]
-        pred = naive_temperature_prediction(history, lookback)
-        actual = round(float(target["temperature_f"]), 1)
-        output.append(
-            {
-                "target_time": str(target["time"]),
-                "predicted_temp_f": str(pred),
-                "actual_temp_f": str(actual),
-                "absolute_error_f": str(round(abs(actual - pred), 1)),
-            }
-        )
+        target_row = rows[idx + 1]
+        preds = predict_all(history, lookback)
+        result = {
+            "target_time": str(target_row["time"]),
+            "hour_utc": str(target_row["hour_utc"]),
+            "day_of_week": str(target_row["day_of_week"]),
+        }
+        for target, pred in preds.items():
+            actual = target_row.get(target)
+            result[f"predicted_{target}"] = str(pred)
+            result[f"actual_{target}"] = "" if actual is None else str(round(float(actual), 1))
+            result[f"absolute_error_{target}"] = "" if actual is None else str(round(abs(float(actual) - pred), 1))
+        output.append(result)
     return output
+
+
+def backtest_fieldnames() -> list[str]:
+    base = ["target_time", "hour_utc", "day_of_week"]
+    for target in TARGETS:
+        base.extend([f"predicted_{target}", f"actual_{target}", f"absolute_error_{target}"])
+    return base
 
 
 def write_backtest_csv(path: Path, rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["target_time", "predicted_temp_f", "actual_temp_f", "absolute_error_f"]
     with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=backtest_fieldnames())
         writer.writeheader()
         writer.writerows(rows)
 
 
-def mean_absolute_error(rows: list[dict[str, str]]) -> float:
-    if not rows:
+def mean_absolute_error(rows: list[dict[str, str]], target: str) -> float:
+    errors = [float(row[f"absolute_error_{target}"]) for row in rows if row.get(f"absolute_error_{target}") not in {None, ""}]
+    if not errors:
         return 0.0
-    return round(sum(float(row["absolute_error_f"]) for row in rows) / len(rows), 2)
+    return round(sum(errors) / len(errors), 2)
 
 
 def write_markdown(rows: list[dict[str, str]], backtest_rows: list[dict[str, str]], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    completed = [row for row in rows if row.get("status") == "DONE" and row.get("absolute_error_f")]
+    completed = [row for row in rows if row.get("status") == "DONE"]
     lines = [
-        "# Russell, Kansas Hourly Temperature Log",
+        "# Russell, Kansas Hourly Weather Log",
         "",
-        "Hourly beginner forecast for next-hour temperature in degrees Fahrenheit.",
+        "Hourly beginner forecast for next-hour weather values.",
         "",
-        f"Live completed MAE: {mean_absolute_error(completed)} °F across {len(completed)} checked predictions.",
-        f"Backtest MAE: {mean_absolute_error(backtest_rows)} °F across {len(backtest_rows)} hourly predictions.",
+        "Model inputs: previous 24-hour values, recent movement, hour of day, day of week, humidity, wind, cloud cover, pressure, and precipitation probability.",
         "",
-        "| Run time | Target hour | Predicted °F | Actual °F | Error °F | Status |",
-        "|---|---:|---:|---:|---:|---:|",
+        "## Live MAE",
+        "",
     ]
+    for target, unit in TARGETS.items():
+        lines.append(f"- {target}: {mean_absolute_error(completed, target)} {unit} across {len(completed)} checked predictions")
+    lines.extend(["", "## Backtest MAE", ""])
+    for target, unit in TARGETS.items():
+        lines.append(f"- {target}: {mean_absolute_error(backtest_rows, target)} {unit} across {len(backtest_rows)} hourly predictions")
+    lines.extend([
+        "",
+        "## Latest live rows",
+        "",
+        "| Run time | Target hour | Pred temp °F | Actual temp °F | Temp error °F | Pred humidity % | Pred wind mph | Pred cloud % | Pred pressure hPa | Pred precip % | Status |",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ])
     for row in list(reversed(rows[-72:])):
         lines.append(
-            f"| {row['run_time']} | {row['target_time']} | {row['predicted_temp_f']} | "
-            f"{row['actual_temp_f'] or 'waiting'} | {row['absolute_error_f'] or 'waiting'} | {row['status']} |"
+            f"| {row['run_time']} | {row['target_time']} | {row['predicted_temperature_f']} | "
+            f"{row['actual_temperature_f'] or 'waiting'} | {row['absolute_error_temperature_f'] or 'waiting'} | "
+            f"{row['predicted_humidity_pct']} | {row['predicted_wind_speed_mph']} | {row['predicted_cloud_cover_pct']} | "
+            f"{row['predicted_pressure_hpa']} | {row['predicted_precip_probability_pct']} | {row['status']} |"
         )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -223,10 +289,12 @@ def main() -> None:
     write_markdown(log_rows, backtest_rows, Path(args.md))
     latest = log_rows[-1]
     print(
-        f"Russell next-hour temp prediction: {latest['predicted_temp_f']} °F "
-        f"for {latest['target_time']} / {latest['status']}"
+        f"Russell next-hour weather prediction for {latest['target_time']}: "
+        f"temp={latest['predicted_temperature_f']} °F, humidity={latest['predicted_humidity_pct']}%, "
+        f"wind={latest['predicted_wind_speed_mph']} mph, cloud={latest['predicted_cloud_cover_pct']}%, "
+        f"pressure={latest['predicted_pressure_hpa']} hPa, precip={latest['predicted_precip_probability_pct']}%"
     )
-    print(f"Backtest MAE since {month_start}: {mean_absolute_error(backtest_rows)} °F")
+    print(f"Backtest temperature MAE since {month_start}: {mean_absolute_error(backtest_rows, 'temperature_f')} °F")
 
 
 if __name__ == "__main__":
