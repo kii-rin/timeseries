@@ -113,7 +113,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--pair", default="EURUSD=X")
     parser.add_argument("--lookback", type=int, default=3)
-    parser.add_argument("--window", default="5d", help="Yahoo chart range, e.g. 5d or 1mo")
+    parser.add_argument("--window", default="7d", help="Yahoo chart range, e.g. 7d, 5d, or 1mo")
     parser.add_argument("--csv", default="reports/pair_direction_backtest.csv")
     parser.add_argument("--md", default="reports/pair_direction_backtest.md")
     args = parser.parse_args()
