@@ -2,25 +2,47 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import urllib.request
+from datetime import date, timedelta
 from pathlib import Path
 
 from scripts.run_pair_direction import direction, fetch_points, guess_next
 
 
-def backtest_pair(pair: str, lookback: int, window: str) -> tuple[list[dict[str, str]], str]:
-    """Backtest pair direction guesses.
+def fetch_daily_frankfurter(base: str = "EUR", quote: str = "USD", days: int = 90) -> list[dict[str, object]]:
+    end = date.today() - timedelta(days=1)
+    start = end - timedelta(days=days)
+    url = f"https://api.frankfurter.app/{start.isoformat()}..{end.isoformat()}?from={base}&to={quote}"
+    req = urllib.request.Request(url, headers={"User-Agent": "timeseries-practice"})
+    with urllib.request.urlopen(req, timeout=30) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    rows = []
+    for day, rates in sorted(payload.get("rates", {}).items()):
+        if quote in rates:
+            rows.append({"time": day, "close": float(rates[quote])})
+    return rows
 
-    Yahoo's hourly endpoint can be inconsistent for long windows, so this script
-    defaults to a shorter supported window and writes an error report instead of
-    silently failing.
-    """
+
+def points_from_source(pair: str, window: str) -> tuple[list[dict[str, object]], str]:
     try:
         points = fetch_points(pair, interval="60m", range_=window)
-    except Exception as exc:  # noqa: BLE001
-        return [], f"data_fetch_failed: {type(exc).__name__}: {exc}"
+        if len(points) >= 10:
+            return points, f"yahoo_hourly_{window}"
+    except Exception:
+        pass
 
+    if pair == "EURUSD=X":
+        points = fetch_daily_frankfurter("EUR", "USD", days=90)
+        return points, "frankfurter_daily_90d"
+
+    return [], "no_fallback_for_pair"
+
+
+def backtest_pair(pair: str, lookback: int, window: str) -> tuple[list[dict[str, str]], str]:
+    points, source = points_from_source(pair, window)
     if len(points) < lookback + 3:
-        return [], f"not_enough_points: got {len(points)}, need at least {lookback + 3}"
+        return [], f"not_enough_points_from_{source}: got {len(points)}, need at least {lookback + 3}"
 
     rows: list[dict[str, str]] = []
     for idx in range(lookback + 1, len(points) - 1):
@@ -39,12 +61,13 @@ def backtest_pair(pair: str, lookback: int, window: str) -> tuple[list[dict[str,
             {
                 "target_time": str(target_point["time"]),
                 "pair": pair,
+                "source": source,
                 "guess": guess,
                 "actual": actual,
                 "result": result,
             }
         )
-    return rows, "ok"
+    return rows, f"ok_{source}"
 
 
 def accuracy(rows: list[dict[str, str]]) -> float:
@@ -57,7 +80,7 @@ def accuracy(rows: list[dict[str, str]]) -> float:
 
 def save_csv(path: Path, rows: list[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = ["target_time", "pair", "guess", "actual", "result"]
+    fieldnames = ["target_time", "pair", "source", "guess", "actual", "result"]
     with path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -66,18 +89,23 @@ def save_csv(path: Path, rows: list[dict[str, str]]) -> None:
 
 def save_markdown(path: Path, rows: list[dict[str, str]], status: str, window: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    source = rows[0]["source"] if rows else "none"
     lines = [
         "# Pair Direction Backtest",
         "",
         f"Status: {status}",
-        f"Window: {window}",
-        f"Accuracy: {accuracy(rows)}% across {len(rows)} hourly checks.",
+        f"Source: {source}",
+        f"Requested Yahoo window: {window}",
+        f"Accuracy: {accuracy(rows)}% across {len(rows)} checks.",
         "",
-        "| Target hour | Pair | Guess | Actual | Result |",
-        "|---|---:|---:|---:|---:|",
+        "| Target time | Pair | Source | Guess | Actual | Result |",
+        "|---|---:|---:|---:|---:|---:|",
     ]
     for row in list(reversed(rows[-72:])):
-        lines.append(f"| {row['target_time']} | {row['pair']} | {row['guess']} | {row['actual']} | {row['result']} |")
+        lines.append(
+            f"| {row['target_time']} | {row['pair']} | {row['source']} | "
+            f"{row['guess']} | {row['actual']} | {row['result']} |"
+        )
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
