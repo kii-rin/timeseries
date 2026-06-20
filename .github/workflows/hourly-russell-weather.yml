@@ -1,10 +1,7 @@
-name: hourly-russell-timeseries
+name: russell-timeseries-manual
 
 on:
-  push:
   workflow_dispatch:
-  schedule:
-    - cron: "0 * * * *"
 
 permissions:
   contents: write
@@ -29,5 +26,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add reports/weather_russell.csv reports/weather_russell_backtest.csv reports/air_quality_russell.csv
-          git diff --cached --quiet || git commit -m "Update hourly Russell time-series logs"
+          git diff --cached --quiet || git commit -m "Update Russell time-series logs"
           git push
